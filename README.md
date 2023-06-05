@@ -7,9 +7,8 @@ Intersection of 2D Rotated Rectangle implemented by PyTorch
 3. `from rorc_intersection import rotatedRectangleIntersection, get_intersection_area`
 
 ## Format
-`
-torch.zeros(N, 5, dtype=torch.float32)
-`
+`torch.zeros(N, 5, dtype=torch.float32)`
+
 The columns represent CenterX, CenterY, Width, Height, and Angle (clockwise, degree), respectively.
 
 
