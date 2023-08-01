@@ -17,6 +17,7 @@ The columns represent CenterX, CenterY, Width, Height, and Angle (clockwise, deg
 2. https://github.com/lilanxiao/Rotated_IoU/blob/e2ca1530828ff64c105a53eb23e0788262d72428/box_intersection_2d.py
 
 
-
+## License
+MIT
 
 
