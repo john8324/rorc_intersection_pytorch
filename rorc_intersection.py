@@ -43,21 +43,21 @@ def __rotatedRectangleIntersection(rorcs1: torch.Tensor, rorcs2: torch.Tensor, D
 
     # exchange
     if N > M:
-        I_pts, mask = __rotatedRectangleIntersection(rorcs2, rorcs1)
+        I_pts, mask = __rotatedRectangleIntersection(rorcs2, rorcs1, DC_thresh)
         return I_pts.permute(1, 0, 2, 3), mask.permute(1, 0, 2)
     # zero
     if N == 0:
         return torch.empty(0, M, 8, 2, dtype=torch.float, device=rorcs1.device), torch.empty(0, M, 8, dtype=torch.bool, device=rorcs1.device)
     # too many, devide and conquer
-    if N * M >= DC_thresh:
+    if N * M > DC_thresh:
         if N == 1:
             hM = M // 2
-            I_pts, mask = __rotatedRectangleIntersection(rorcs1, rorcs2[:hM, :])
-            I_pts2, mask2 = __rotatedRectangleIntersection(rorcs1, rorcs2[hM:, :])
+            I_pts, mask = __rotatedRectangleIntersection(rorcs1, rorcs2[:hM, :], DC_thresh)
+            I_pts2, mask2 = __rotatedRectangleIntersection(rorcs1, rorcs2[hM:, :], DC_thresh)
             return torch.hstack([I_pts, I_pts2]), torch.hstack([mask, mask2])
         hN = N // 2
-        I_pts, mask = __rotatedRectangleIntersection(rorcs1[:hN, :], rorcs2)
-        I_pts2, mask2 = __rotatedRectangleIntersection(rorcs1[hN:, :], rorcs2)
+        I_pts, mask = __rotatedRectangleIntersection(rorcs1[:hN, :], rorcs2, DC_thresh)
+        I_pts2, mask2 = __rotatedRectangleIntersection(rorcs1[hN:, :], rorcs2, DC_thresh)
         return torch.vstack([I_pts, I_pts2]), torch.vstack([mask, mask2])
 
 
@@ -109,21 +109,20 @@ def __rotatedRectangleIntersection(rorcs1: torch.Tensor, rorcs2: torch.Tensor, D
 
     # det NxMx4x4
     det = vec2[None, :, None, :, 0] * vec1[:, None, :, None, 1] - vec1[:, None, :, None, 0] * vec2[None, :, None, :, 1]
-    flag = same.view(N, M, 4, 1).repeat(1, 1, 1, 4) # NxMx4x4, no same by negating later
-    flag |= torch.abs(det) < 1e-12 #we consider accuracy around 1e-6, i.e. 1e-12 when squared
-    detInv = 1. / det
-    t1 = (vec2[None, :, None, :, 0] * vec3[..., 1] - vec3[..., 0] * vec2[None, :, None, :, 1]) * detInv
-    t2 = (vec1[:, None, :, None, 0] * vec3[..., 1] - vec3[..., 0] * vec1[:, None, :, None, 1]) * detInv
+    flag = (~same).view(N, M, 4, 1).repeat(1, 1, 1, 4) # NxMx4x4, no same
+    flag = flag & (torch.abs(det) >= 1e-12) # valid det, consider accuracy around 1e-6, i.e. 1e-12 when squared
+    t1 = torch.zeros(N, M, 4, 4, dtype=det.dtype, device=det.device)
+    t2 = t1.clone()
+    t1[flag] = (vec2[None, :, None, :, 0] * vec3[..., 1] - vec3[..., 0] * vec2[None, :, None, :, 1])[flag] / det[flag]
+    t2[flag] = (vec1[:, None, :, None, 0] * vec3[..., 1] - vec3[..., 0] * vec1[:, None, :, None, 1])[flag] / det[flag]
 
-    # This takes care of parallel lines
-    flag |= torch.isinf(t1) | torch.isnan(t1) | torch.isinf(t2) | torch.isnan(t2)
     # Intersections exist
-    flag = ~flag & (t1 >= 0.0) & (t1 <= 1.0) & (t2 >= 0.0) & (t2 <= 1.0)
+    flag = flag & ((t1 >= 0.0) & (t1 <= 1.0)) & ((t2 >= 0.0) & (t2 <= 1.0))
     intersection_pts = (pts1[:, None, :, None, :] + vec1[:, None, :, None, :] * t1[..., None]) * flag[..., None].float()
     intersection_pts = intersection_pts.view(N, M, 16, 2)
     intersection_mask = flag.view(N, M, 16)
 
-    del vec3, det, detInv, t1, t2
+    del vec3, det, t1, t2
 
 
     # Check for vertices from rect1 inside recct2
@@ -168,7 +167,7 @@ def __rotatedRectangleIntersection(rorcs1: torch.Tensor, rorcs2: torch.Tensor, D
     K = 24
 
     with torch.no_grad():
-        B = max(DC_thresh // 10, 1)
+        B = max(min(N * M, DC_thresh // 10), 1)
         # NxMx24x24 is TOO LARGE, therefore use Bx24x24
         # WARNING: the last "B" can be SMALLER than B
         for bi in range(0, N*M, B):
@@ -229,8 +228,9 @@ def __rotatedRectangleIntersection(rorcs1: torch.Tensor, rorcs2: torch.Tensor, D
 
     # order points
     idx = argsort_vertice(I_pts, mask)
-    I_pts[..., 0] = torch.gather(I_pts[..., 0], 2, idx)
-    I_pts[..., 1] = torch.gather(I_pts[..., 1], 2, idx)
+    # Use no inplace operations
+    tmp = torch.gather(I_pts[..., 0], 2, idx), torch.gather(I_pts[..., 1], 2, idx)
+    I_pts = torch.stack(tmp, dim=-1)
     mask = torch.gather(mask, 2, idx) # equivalent: mask[i, j, k] = mask[i, j, idx[i, j, k]]
     #for i in range(N):
     #    for j in range(M):
@@ -314,5 +314,6 @@ def get_intersection_area(intersection: torch.Tensor, mask: torch.Tensor):
     # sum of sub triangle areas
     CROSS = vec1[..., 0] * vec2[..., 1] - vec1[..., 1] * vec2[..., 0]
     return 0.5 * CROSS.abs().sum(-1)
+
 
 
